@@ -188,8 +188,8 @@ export default function ListDetailPage({
       .then((job) => {
         if (job.status && job.status !== 'idle' && job.status !== 'done' && job.status !== 'canceled') {
           setImportJob(job);
-          setImporting(true);
-          startImportPoll();
+          setImporting(job.status === "running" || job.status === "scheduled");
+          startImportPoll(false);
         }
       })
       .catch(() => {});
@@ -294,9 +294,10 @@ export default function ListDetailPage({
     if (importPollRef.current) { clearInterval(importPollRef.current); importPollRef.current = null; }
   }
 
-  function startImportPoll() {
+  function startImportPoll(reportExistingError = false) {
     stopImportPoll();
     let lastImported = -1;
+    let reportError = reportExistingError;
     const today = new Date().toISOString().slice(0, 10);
     importPollRef.current = setInterval(async () => {
       try {
@@ -315,9 +316,12 @@ export default function ListDetailPage({
 
         if (job.status === 'error') {
           stopImportPoll(); setImporting(false);
-          toast.error(job.error ?? "Import failed");
+          // A finished failure from an earlier attempt is already stored. Only
+          // surface it when this poll was started for a new import.
+          if (reportError) toast.error(job.error ?? "Import failed");
           return;
         }
+        reportError = true;
         // Keep the active spinner only while something runs (or is due today).
         const activeNow = (job.batches ?? []).some(
           (b: { status: string; scheduled_for: string | null }) =>
@@ -352,7 +356,7 @@ export default function ListDetailPage({
     // Close modal, show inline progress banner, start polling
     setShowImport(false);
     setImportSource("pick");
-    startImportPoll();
+    startImportPoll(true);
   }
 
   function closeImportModal() {
