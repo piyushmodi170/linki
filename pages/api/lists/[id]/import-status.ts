@@ -28,11 +28,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (batches.length === 0) return res.json({ status: "idle", dailyCap });
 
-  // The "current" batch = running > scheduled > most recent — drives the old single-job UI
+  // The "current" batch = running > scheduled > most recent — drives the old single-job UI.
+  // batches is ordered by batch_index, then newest-first, so the last row is the
+  // oldest attempt. Pick the latest started_at when nothing is in flight, otherwise
+  // a finished failure keeps showing the first error forever.
+  const mostRecent = [...batches].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
   const current =
     batches.find((b) => b.status === "running") ??
     batches.find((b) => b.status === "scheduled") ??
-    batches[batches.length - 1];
+    mostRecent;
 
   const total = batches.reduce((m, b) => Math.max(m, b.total || 0), 0);
   const importedSoFar = batches.reduce((s, b) => s + (b.imported || 0), 0);

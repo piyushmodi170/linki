@@ -595,6 +595,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <p>2. Open DevTools → <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></p>
                   <p>3. Find <strong>li_at</strong> → double-click the Value cell → copy it → paste below</p>
                   <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-300 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
+                  <p>A Cookie-Editor JSON export can be pasted into the li_at field instead.</p>
                 </div>
                 <form onSubmit={submitAuth} className="flex flex-col gap-3">
                   <div>
