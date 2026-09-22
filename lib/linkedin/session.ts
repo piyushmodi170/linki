@@ -3,6 +3,7 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { getDb } from "@/lib/db";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
+import { normalizeStorageState } from "@/lib/linkedin/cookie-paste";
 
 chromium.use(StealthPlugin());
 
@@ -69,7 +70,17 @@ async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
     let storageState: object | undefined;
     if (account.cookies_json) {
       try {
-        storageState = JSON.parse(decryptSecret(account.cookies_json)!);
+        const parsed = JSON.parse(decryptSecret(account.cookies_json)!);
+        const normalized = normalizeStorageState(parsed);
+        storageState = normalized.state;
+        // A Cookie-Editor JSON export pasted into li_at is stored as one giant
+        // cookie value. Rewrite it once so later launches don't re-parse it.
+        if (normalized.changed) {
+          db.prepare("UPDATE accounts SET cookies_json = ? WHERE id = ?").run(
+            encryptSecret(JSON.stringify(normalized.state)),
+            accountId
+          );
+        }
       } catch {
         // Invalid storage state — will need re-auth
       }
