@@ -92,6 +92,141 @@ function extractSavedSearchId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+/** Regular LinkedIn people search, e.g. /search/results/people/?keywords=...&network=...&geoUrn=... */
+export function isLinkedInPeopleSearchUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host !== "linkedin.com") return false;
+    return /^\/search\/results\/people\/?$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function peopleSearchPageUrl(raw: string, pageNum: number): string {
+  const parsed = new URL(raw);
+  if (pageNum <= 1) parsed.searchParams.delete("page");
+  else parsed.searchParams.set("page", String(pageNum));
+  return parsed.toString();
+}
+
+function textOf(node: unknown): string | null {
+  if (typeof node === "string") return node.trim() || null;
+  if (!node || typeof node !== "object") return null;
+  const text = (node as { text?: unknown }).text;
+  return typeof text === "string" && text.trim() ? text.trim() : null;
+}
+
+function normalizeProfileUrl(raw: string): string | null {
+  try {
+    const parsed = new URL(raw, "https://www.linkedin.com");
+    const match = parsed.pathname.match(/\/in\/([^/?#]+)/);
+    if (!match) return null;
+    return `https://www.linkedin.com/in/${decodeURIComponent(match[1])}/`;
+  } catch {
+    return null;
+  }
+}
+
+function parseDegree(text: string | null): number | null {
+  if (!text) return null;
+  const match = text.match(/([123])(?:st|nd|rd)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function splitName(full: string | null): { firstName: string | null; lastName: string | null } {
+  if (!full) return { firstName: null, lastName: null };
+  const parts = full.trim().split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: null };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function splitHeadline(headline: string | null): { title: string | null; company: string | null } {
+  if (!headline) return { title: null, company: null };
+  const parts = headline.split(/\s+at\s+/i);
+  if (parts.length >= 2) {
+    return { title: parts[0].trim() || null, company: parts.slice(1).join(" at ").trim() || null };
+  }
+  return { title: headline, company: null };
+}
+
+function isPeopleEntityResult(obj: Record<string, unknown>): boolean {
+  const type = obj.$type;
+  if (typeof type === "string" && type.includes("EntityResultViewModel")) return true;
+  return typeof obj.navigationUrl === "string" && obj.navigationUrl.includes("/in/") && obj.title != null;
+}
+
+interface PeopleSearchHit {
+  profile: ScrapedProfile;
+}
+
+function resultFromEntity(obj: Record<string, unknown>): PeopleSearchHit | null {
+  const navigationUrl = typeof obj.navigationUrl === "string" ? obj.navigationUrl : null;
+  if (!navigationUrl) return null;
+  const linkedinUrl = normalizeProfileUrl(navigationUrl);
+  if (!linkedinUrl) return null;
+
+  const fullName = textOf(obj.title);
+  const headline = textOf(obj.primarySubtitle);
+  const { title, company } = splitHeadline(headline);
+  const { firstName, lastName } = splitName(fullName);
+  const trackingUrn = typeof obj.trackingUrn === "string" ? obj.trackingUrn : null;
+  const entityUrn = typeof obj.entityUrn === "string" ? obj.entityUrn : trackingUrn ?? linkedinUrl;
+
+  return {
+    profile: {
+      salesNavUrn: entityUrn,
+      salesNavUrl: "",
+      linkedinUrl,
+      fullName,
+      firstName,
+      lastName,
+      title,
+      company,
+      location: textOf(obj.secondarySubtitle),
+      degree: parseDegree(textOf(obj.badgeText)),
+      objectUrn: trackingUrn,
+      summary: null,
+      openLink: false,
+      companyIndustry: null,
+      companyLocation: null,
+      tenureMonths: null,
+      spotlightBadges: null,
+    },
+  };
+}
+
+/** Pull people cards and the reported total out of a voyager search response. */
+export function parsePeopleSearchPayload(payload: unknown): { profiles: ScrapedProfile[]; total: number } {
+  const profiles: ScrapedProfile[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.totalResultCount === "number" && obj.totalResultCount > total) {
+      total = obj.totalResultCount;
+    }
+    if (isPeopleEntityResult(obj)) {
+      const hit = resultFromEntity(obj);
+      if (hit && !seen.has(hit.profile.linkedinUrl!)) {
+        seen.add(hit.profile.linkedinUrl!);
+        profiles.push(hit.profile);
+      }
+    }
+    for (const value of Object.values(obj)) visit(value);
+  };
+
+  visit(payload);
+  return { profiles, total };
+}
+
 function urnToSalesNavUrl(urn: string): string {
   const match = urn.match(/\(([^)]+)\)/);
   if (!match) return "";
@@ -435,8 +570,111 @@ export async function scrapeSavedSearch(
 }
 
 /**
- * Dispatcher — accepts either a lead list URL or a saved search URL.
- * Callers don't need to know which type they're dealing with.
+ * Regular LinkedIn people search (/search/results/people). The page is 10
+ * results and the cards arrive in the voyager search response.
+ */
+export async function scrapePeopleSearch(
+  ctx: BrowserContext,
+  searchUrl: string,
+  opts: ScrapeOptions = {}
+): Promise<WindowedScrapeResult> {
+  const { startPage = 1, maxPages = 50, onProgress, isCanceled } = opts;
+  if (!isLinkedInPeopleSearchUrl(searchUrl)) {
+    throw new Error(`Invalid LinkedIn people search URL: ${searchUrl}`);
+  }
+
+  const allProfiles: ScrapedProfile[] = [];
+  const seen = new Set<string>();
+  // LinkedIn's people search URL paginates 10 results per page.
+  const pageSize = 10;
+
+  const page = await ctx.newPage();
+  let knownTotal = 0;
+
+  const waitForIntercept = async (url: string, waitMs: number): Promise<{ profiles: ScrapedProfile[]; total: number } | null> => {
+    let best: { profiles: ScrapedProfile[]; total: number } | null = null;
+    page.removeAllListeners("response");
+    page.on("response", async (response) => {
+      const responseUrl = response.url();
+      if (response.status() !== 200) return;
+      if (!/voyagerSearchDashClusters|search\/dash\/clusters|voyager\/api\/graphql/.test(responseUrl)) return;
+      try {
+        const parsed = parsePeopleSearchPayload(await response.json());
+        if (parsed.profiles.length === 0 && parsed.total === 0) return;
+        if (!best || parsed.profiles.length > best.profiles.length) best = parsed;
+      } catch { /* non-json or unrelated graphql */ }
+    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(waitMs);
+    return best;
+  };
+
+  const take = (parsed: { profiles: ScrapedProfile[]; total: number } | null) => {
+    if (!parsed) return 0;
+    if (parsed.total > knownTotal) knownTotal = parsed.total;
+    let added = 0;
+    for (const profile of parsed.profiles) {
+      const key = profile.linkedinUrl;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      allProfiles.push(profile);
+      added++;
+    }
+    return added;
+  };
+
+  const first = await waitForIntercept(peopleSearchPageUrl(searchUrl, startPage), 15000);
+  if (!first || first.profiles.length === 0) {
+    const finalUrl = page.url();
+    await page.close();
+    if (/login|checkpoint|authwall/i.test(finalUrl)) {
+      throw new Error("No data intercepted from LinkedIn search — session may need re-authentication");
+    }
+    throw new Error("No people were returned for this LinkedIn search. Check the filters, or re-authenticate the LinkedIn account.");
+  }
+
+  take(first);
+  console.log(`[scraper:people] page ${startPage}: ${allProfiles.length} profiles, total=${knownTotal}`);
+
+  const totalPages = knownTotal > 0 ? Math.ceil(knownTotal / pageSize) : startPage + maxPages - 1;
+  const endPage = Math.min(totalPages, startPage + maxPages - 1);
+  let lastPage = startPage;
+  onProgress?.({ phase: "scraping", page: startPage, totalPages: endPage, count: allProfiles.length, total: knownTotal || allProfiles.length });
+
+  for (let pageNum = startPage + 1; pageNum <= endPage; pageNum++) {
+    if (isCanceled && (await isCanceled())) break;
+    const delayMs = 60000 + Math.random() * 60000;
+    console.log(`[scraper:people] waiting ${Math.round(delayMs / 1000)}s before page ${pageNum}...`);
+    await page.waitForTimeout(delayMs);
+    if (isCanceled && (await isCanceled())) break;
+
+    let pageData = await waitForIntercept(peopleSearchPageUrl(searchUrl, pageNum), 15000);
+    if (!pageData || pageData.profiles.length === 0) {
+      console.log(`[scraper:people] page ${pageNum} empty on first try — retrying with 15s wait`);
+      pageData = await waitForIntercept(peopleSearchPageUrl(searchUrl, pageNum), 15000);
+    }
+    const added = take(pageData);
+    lastPage = pageNum;
+    if (added === 0) {
+      console.log(`[scraper:people] page ${pageNum} added nothing — stopping`);
+      break;
+    }
+    console.log(`[scraper:people] page ${pageNum}/${endPage}: ${allProfiles.length} (total ${knownTotal})`);
+    onProgress?.({ phase: "scraping", page: pageNum, totalPages: endPage, count: allProfiles.length, total: knownTotal || allProfiles.length });
+  }
+
+  await page.close();
+  const exhausted = knownTotal > 0 ? lastPage >= Math.ceil(knownTotal / pageSize) : lastPage < endPage;
+  return {
+    profiles: allProfiles,
+    lastPage,
+    knownTotal: knownTotal || allProfiles.length,
+    exhausted,
+  };
+}
+
+/**
+ * Dispatcher — Sales Nav list, Sales Nav saved search, or a regular LinkedIn people search.
  */
 export async function scrapeNavigatorUrl(
   ctx: BrowserContext,
@@ -449,5 +687,8 @@ export async function scrapeNavigatorUrl(
   if (extractListId(url)) {
     return scrapeNavigatorList(ctx, url, opts);
   }
-  throw new Error(`Unrecognized Sales Navigator URL. Expected a list URL (/sales/lists/people/...) or saved search URL (?savedSearchId=...)`);
+  if (isLinkedInPeopleSearchUrl(url)) {
+    return scrapePeopleSearch(ctx, url, opts);
+  }
+  throw new Error(`Unrecognized LinkedIn URL. Use a people search (/search/results/people/...), a Sales Navigator list (/sales/lists/people/...), or a saved search (?savedSearchId=...).`);
 }

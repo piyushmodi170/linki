@@ -554,7 +554,7 @@ export default function ListDetailPage({
 
       {targets.length === 0 && !importing ? (
         <div className="text-center py-16 text-base-content/40 text-sm">
-          No leads yet. Import from a Sales Navigator list URL.
+          No leads yet. Import from a LinkedIn people search or a Sales Navigator list.
         </div>
       ) : filteredTargets.length === 0 && !importing ? (
         <div className="text-center py-16 text-base-content/40 text-sm">
@@ -792,8 +792,8 @@ export default function ListDetailPage({
                   >
                     <RiSearchLine size={18} className="text-primary mt-0.5" />
                     <span>
-                      <span className="block text-sm font-medium">Sales Navigator search</span>
-                      <span className="block text-xs text-base-content/50 mt-0.5">Paste a Sales Nav list/search URL — Linki scrapes it using a connected LinkedIn account.</span>
+                      <span className="block text-sm font-medium">LinkedIn search</span>
+                      <span className="block text-xs text-base-content/50 mt-0.5">Paste a LinkedIn people search, or a Sales Navigator list or saved search. Linki scrapes it with a connected LinkedIn account.</span>
                     </span>
                   </button>
                   <button
@@ -817,9 +817,9 @@ export default function ListDetailPage({
             {/* Step 2a: Sales Navigator form (existing flow) */}
             {importSource === "sales_nav" && (
               <>
-                <h3 className="font-semibold text-base mb-1">Import from Sales Navigator</h3>
+                <h3 className="font-semibold text-base mb-1">Import from LinkedIn</h3>
                 <p className="text-base-content/50 text-xs mb-3">
-                  Paste a Sales Navigator people list URL. The selected account must be authenticated.
+                  Paste a LinkedIn people search URL, or a Sales Navigator list or saved search. The selected account must be authenticated.
                 </p>
                 <div className="bg-base-300/40 border border-base-300/60 rounded-lg p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
                   <p className="font-medium text-base-content/70">What gets fetched and when</p>
@@ -830,10 +830,10 @@ export default function ListDetailPage({
                 </div>
                 <form onSubmit={runImport} className="flex flex-col gap-3">
                   <div>
-                    <label className="label text-xs text-base-content/50 pb-1">Sales Navigator URL</label>
+                    <label className="label text-xs text-base-content/50 pb-1">LinkedIn URL</label>
                     <input
                       className="input input-bordered input-sm w-full bg-base-300/50 font-mono text-xs"
-                      placeholder="https://www.linkedin.com/sales/lists/people/..."
+                      placeholder="https://www.linkedin.com/search/results/people/?keywords=..."
                       value={importForm.sales_nav_url}
                       onChange={(e) => setImportForm({ ...importForm, sales_nav_url: e.target.value })}
                       required
