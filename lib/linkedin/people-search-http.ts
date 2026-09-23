@@ -2,6 +2,7 @@
 // LinkedIn revoke the session and sign the person out of their own browser.
 
 import type { PlaywrightCookie } from "./cookie-paste";
+import { assertLinkedInRemoteAllowed } from "./remote-guard";
 import {
   peopleFromSearchSnapshot,
   type ScrapedProfile,
@@ -86,6 +87,7 @@ export async function scrapePeopleSearchHttp(
   searchUrl: string,
   startPage = 1
 ): Promise<WindowedScrapeResult> {
+  assertLinkedInRemoteAllowed();
   const url = pageUrl(searchUrl, startPage);
   const response = await fetch(url, {
     method: "GET",
