@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
+import { isLinkedInPeopleSearchUrl } from "@/lib/linkedin/scraper";
 
 // POST /api/lists/[id]/sync-status  body: { account_id: number }
 // Re-fetches the Sales Nav list and updates degree for non-connected targets.
@@ -27,13 +28,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!account?.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
 
   const { getSessionContext } = await import("@/lib/linkedin/session");
-  const { scrapeNavigatorList } = await import("@/lib/linkedin/scraper");
+  const { scrapeNavigatorUrl } = await import("@/lib/linkedin/scraper");
+  const { insertProfiles, startImport } = await import("@/lib/import-jobs");
 
   try {
     const ctx = await getSessionContext(account_id);
-    const { profiles } = await scrapeNavigatorList(ctx, list.sales_nav_url, { maxPages: 300 });
+    const peopleSearch = isLinkedInPeopleSearchUrl(list.sales_nav_url);
+    // People search is fetched one page in this request so it can return, then
+    // the runner continues the remaining pages. Sales Nav keeps its full sync.
+    const { profiles, exhausted } = await scrapeNavigatorUrl(ctx, list.sales_nav_url, {
+      maxPages: peopleSearch ? 1 : 300,
+    });
+    const { imported, skipped } = insertProfiles(db, listId, profiles);
 
-    const updateDegree = db.prepare("UPDATE targets SET degree = ? WHERE linkedin_url = ?");
     const markConnected = db.prepare(
       `UPDATE targets SET degree = ?, connected_at = CASE
          WHEN (degree IS NULL OR degree != 1) AND connected_at IS NULL THEN datetime('now')
@@ -41,22 +48,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
        END
        WHERE linkedin_url = ?`
     );
-
-    let updated = 0;
     db.transaction(() => {
       for (const p of profiles) {
-        if (p.degree === 1) {
-          markConnected.run(p.degree, p.salesNavUrl);
-        } else {
-          updateDegree.run(p.degree, p.salesNavUrl);
-        }
-        updated++;
+        if (p.degree !== 1) continue;
+        const url = p.linkedinUrl || p.salesNavUrl;
+        if (url) markConnected.run(p.degree, url);
       }
     })();
 
-    return res.json({ updated, total: profiles.length });
+    if (peopleSearch && !exhausted) {
+      startImport(db, { listId, accountId: account_id, salesNavUrl: list.sales_nav_url });
+    }
+
+    return res.json({ updated: profiles.length, total: profiles.length, imported, skipped });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    if (/re-authentication|login page|No data intercepted/i.test(message)) {
+      try {
+        const { markNeedsReauth } = await import("@/lib/linkedin/session");
+        await markNeedsReauth(account_id);
+      } catch { /* ignore */ }
+    }
     return res.status(500).json({ error: message });
   }
 }

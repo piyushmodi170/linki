@@ -410,19 +410,24 @@ export default function ListDetailPage({
     e.preventDefault();
     if (!syncAccountId) { toast.error("Select an account"); return; }
     setSyncing(true);
-    const res = await fetch(`/api/lists/${initialList.id}/sync-status`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ account_id: syncAccountId }),
-    });
-    setSyncing(false);
-    const data = await res.json();
-    if (!res.ok) { toast.error(data.error ?? "Sync failed"); return; }
-    toast.success(`Synced ${data.updated} leads`);
-    setShowSync(false);
-    const listRes = await fetch(`/api/lists/${initialList.id}`);
-    const listData = await listRes.json();
-    setTargets(listData.targets);
+    try {
+      const res = await fetch(`/api/lists/${initialList.id}/sync-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_id: syncAccountId }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Sync failed"); return; }
+      toast.success(`Synced ${data.updated} leads`);
+      setShowSync(false);
+      const listRes = await fetch(`/api/lists/${initialList.id}`);
+      const listData = await listRes.json();
+      setTargets(listData.targets);
+    } catch {
+      toast.error("Could not reach the server. Refresh the page and try Sync again.");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function enrichWithApollo() {
@@ -1008,7 +1013,7 @@ export default function ListDetailPage({
           <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
             <h3 className="font-semibold text-base mb-1">Sync Connection Status</h3>
             <p className="text-base-content/50 text-xs mb-4">
-              Re-fetches the Sales Navigator list to check who accepted your connection requests.
+              Fetches the saved LinkedIn URL and adds those people to this list. A people search works, as does a Sales Navigator list.
             </p>
             <form onSubmit={runSync} className="flex flex-col gap-3">
               <div>
