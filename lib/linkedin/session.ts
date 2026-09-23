@@ -4,7 +4,7 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { getDb } from "@/lib/db";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { normalizeStorageState } from "@/lib/linkedin/cookie-paste";
-import { fetchLinkedInIdentity, type LinkedInProfileCard } from "@/lib/linkedin/identity";
+import { describeSavedSession, type LinkedInProfileCard } from "@/lib/linkedin/identity";
 
 chromium.use(StealthPlugin());
 
@@ -207,8 +207,9 @@ function storeIdentity(accountId: string, connected: boolean, profile: LinkedInP
 }
 
 /**
- * Ask LinkedIn who these cookies belong to. This is an HTTP request only.
- * A headless browser using the same li_at signs that person out of LinkedIn.
+ * Report whether a li_at cookie is saved. Does not contact LinkedIn.
+ * A request from this server that presents li_at makes LinkedIn sign that
+ * person out of their own browser.
  */
 export async function verifyLinkedInSession(accountId: string): Promise<{ connected: boolean; message: string; profile: LinkedInProfileCard | null }> {
   const db = getDb();
@@ -231,7 +232,7 @@ export async function verifyLinkedInSession(accountId: string): Promise<{ connec
     return { connected: false, message: "Saved cookies could not be read. Paste them again.", profile: null };
   }
 
-  const result = await fetchLinkedInIdentity(cookies);
+  const result = describeSavedSession(cookies);
   storeIdentity(accountId, result.connected, result.profile);
   return result;
 }
