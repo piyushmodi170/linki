@@ -10,7 +10,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ACCOUNT_COLUMNS = `a.id, a.name, a.email, a.is_authenticated, a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit,
     a.active_hours_start, a.active_hours_end, a.timezone, a.working_days, a.created_at,
     a.inbox_synced_at, a.accepted_sync_at, a.li_connections, a.li_pending, a.li_profile_views,
-    a.li_stats_synced_at, a.connections_synced_through_ms`;
+    a.li_stats_synced_at, a.connections_synced_through_ms,
+    a.li_profile_name, a.li_profile_headline, a.li_profile_photo`;
 
   if (req.method === "GET") {
     const accounts = db.prepare(`

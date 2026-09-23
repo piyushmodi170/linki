@@ -26,6 +26,16 @@ interface LiAccount {
   timezone: string; working_days: string;
   created_at: string;
   active_run_count: number;
+  li_profile_name?: string | null;
+  li_profile_headline?: string | null;
+  li_profile_photo?: string | null;
+}
+
+interface LinkedInProfileCard {
+  fullName: string;
+  headline: string | null;
+  photoUrl: string | null;
+  publicIdentifier: string | null;
 }
 
 interface EmailAccount {
@@ -52,6 +62,7 @@ export const getServerSideProps: GetServerSideProps = async ({ query }) => {
     .prepare(
       `SELECT a.id, a.name, a.email, a.is_authenticated, a.daily_connection_limit, a.daily_message_limit, a.daily_inmail_limit,
               a.active_hours_start, a.active_hours_end, a.timezone, a.working_days, a.created_at,
+              a.li_profile_name, a.li_profile_headline, a.li_profile_photo,
               (SELECT COUNT(*) FROM runs r WHERE r.account_id = a.id AND r.status IN ('running', 'paused')) AS active_run_count
        FROM accounts a ORDER BY a.created_at DESC`
     )
@@ -239,6 +250,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
   const [challengeMsg, setChallengeMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [pendingProfile, setPendingProfile] = useState<LinkedInProfileCard | null>(null);
 
   function openAuthModal(account: LiAccount) {
     setAuthModal(account.id);
@@ -247,6 +259,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     setChallengeMsg("");
     setLoginForm({ email: account.email ?? "", password: "", code: "" });
     setAuthForm({ li_at: "", document_cookie: "" });
+    setPendingProfile(null);
   }
 
   function closeAuthModal() {
@@ -255,6 +268,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     setChallengeMsg("");
     setLoginForm({ email: "", password: "", code: "" });
     setAuthForm({ li_at: "", document_cookie: "" });
+    setPendingProfile(null);
   }
 
   async function submitLogin(e: React.FormEvent) {
@@ -372,16 +386,42 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     e.preventDefault();
     if (!authModal) return;
     setAuthLoading(true);
-    const res = await fetch(`/api/accounts/${authModal}/authenticate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(authForm),
-    });
-    setAuthLoading(false);
-    if (!res.ok) { toast.error((await res.json()).error ?? "Authentication failed"); return; }
-    toast.success("Account authenticated");
-    closeAuthModal();
-    refresh();
+    try {
+      const res = await fetch(`/api/accounts/${authModal}/authenticate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(authForm),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Authentication failed"); return; }
+      setPendingProfile(data.profile);
+      refresh();
+    } catch {
+      toast.error("Could not reach the server. Refresh the page and try again.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function confirmProfile(accept: boolean) {
+    if (!authModal) return;
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`/api/accounts/${authModal}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Could not save the confirmation"); return; }
+      toast.success(accept ? `Connected ${pendingProfile?.fullName ?? "account"}` : "Cookies discarded");
+      closeAuthModal();
+      refresh();
+    } catch {
+      toast.error("Could not reach the server. Refresh the page and try again.");
+    } finally {
+      setAuthLoading(false);
+    }
   }
 
   return (
@@ -404,11 +444,16 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
         <div className="flex flex-col gap-2">
           {accounts.map((a) => (
             <div key={a.id} className="flex items-center gap-4 px-4 py-3 bg-base-200 border border-base-300/50 rounded-xl hover:border-base-300 transition-colors">
-              <div className="w-9 h-9 rounded-lg bg-base-300 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
-                {a.name.charAt(0).toUpperCase()}
-              </div>
+              {a.li_profile_photo ? (
+                <img src={a.li_profile_photo} alt="" referrerPolicy="no-referrer" className="w-9 h-9 rounded-full object-cover shrink-0 bg-base-300" />
+              ) : (
+                <div className="w-9 h-9 rounded-lg bg-base-300 flex items-center justify-center text-sm font-bold text-base-content/60 shrink-0">
+                  {(a.li_profile_name || a.name).charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{a.name}</p>
+                <p className="text-sm font-medium">{a.li_profile_name || a.name}</p>
+                {a.li_profile_headline ? <p className="text-xs text-base-content/50 truncate">{a.li_profile_headline}</p> : null}
                 <p className="text-xs text-base-content/40">
                   {a.email} · {a.daily_connection_limit} conn/day · {a.daily_message_limit} msg/day · {a.daily_inmail_limit} inmail/day
                   {" · "}{fmtHour(a.active_hours_start ?? 9)}–{fmtHour(a.active_hours_end ?? 18)} ({a.timezone ?? "UTC"})
@@ -421,7 +466,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   </span>
                 ) : null}
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-300 text-base-content/40"}`}>
-                  {a.is_authenticated ? <><RiCheckLine size={10} /> Auth</> : "Unauth"}
+                  {a.is_authenticated ? <><RiCheckLine size={10} /> Available</> : "Unauth"}
                 </span>
                 <button
                   type="button"
@@ -615,6 +660,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
               </form>
             ) : (
               <>
+                {!pendingProfile && (
                 <div className="bg-base-300/50 rounded-lg p-3 text-xs text-base-content/60 mb-4 space-y-1.5">
                   <p className="font-medium text-base-content/80">How to get your cookies:</p>
                   <p>1. Open <strong>linkedin.com</strong> in Chrome and make sure you are logged in</p>
@@ -622,7 +668,37 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <p>3. Find <strong>li_at</strong> → double-click the Value cell → copy it → paste below</p>
                   <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-300 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
                   <p>A Cookie-Editor JSON export can be pasted into the li_at field instead.</p>
+                  <p>Saving checks LinkedIn with a normal request and shows the account it finds. It does not open a second browser, so you stay signed in.</p>
                 </div>
+                )}
+                {pendingProfile ? (
+                  <div className="flex flex-col gap-4">
+                    <div>
+                      <h4 className="font-semibold text-sm">Connect account</h4>
+                      <p className="text-xs text-base-content/50">Confirm the LinkedIn account we found from your cookies.</p>
+                    </div>
+                    <div className="flex items-start gap-3">
+                      {pendingProfile.photoUrl ? (
+                        <img src={pendingProfile.photoUrl} alt="" referrerPolicy="no-referrer" className="w-14 h-14 rounded-full object-cover bg-base-300 shrink-0" />
+                      ) : (
+                        <div className="w-14 h-14 rounded-full bg-base-300 flex items-center justify-center text-lg font-semibold shrink-0">
+                          {pendingProfile.fullName.charAt(0)}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm">Connect {pendingProfile.fullName.split(" ")[0]}?</p>
+                        {pendingProfile.headline ? <p className="text-xs text-base-content/70 mt-1">{pendingProfile.headline}</p> : null}
+                        <p className="text-xs text-base-content/40 mt-2">This only saves the session. LinkedIn stays signed in where you copied the cookies.</p>
+                      </div>
+                    </div>
+                    <div className="modal-action mt-1">
+                      <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm border border-base-300 hover:bg-base-300/50 transition-colors" onClick={() => confirmProfile(false)} disabled={authLoading}>No, that&apos;s not me</button>
+                      <button type="button" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" onClick={() => confirmProfile(true)} disabled={authLoading}>
+                        {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Yes, that's me"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
                 <form onSubmit={submitAuth} className="flex flex-col gap-3">
                   <div>
                     <label className="label text-xs text-base-content/50 pb-1">li_at cookie value <span className="text-error">*</span></label>
@@ -635,14 +711,15 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <div className="modal-action mt-1">
                     <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={closeAuthModal}>Cancel</button>
                     <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
-                      {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Save Cookies"}
+                      {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Check account"}
                     </button>
                   </div>
                 </form>
+                )}
               </>
             )}
           </div>
-          <div className="modal-backdrop" onClick={closeAuthModal} />
+          <div className="modal-backdrop" onClick={() => { if (!pendingProfile) closeAuthModal(); }} />
         </div>
       )}
     </div>

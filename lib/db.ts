@@ -472,6 +472,10 @@ function runMigrations(db: Database.Database) {
     "ALTER TABLE lists ADD COLUMN purpose TEXT",
     // Manual/CSV-only field — no automation reads or writes this, reference data only.
     "ALTER TABLE targets ADD COLUMN phone TEXT",
+    // Profile shown after a cookie check, so the user can confirm which LinkedIn account was found.
+    "ALTER TABLE accounts ADD COLUMN li_profile_name TEXT",
+    "ALTER TABLE accounts ADD COLUMN li_profile_headline TEXT",
+    "ALTER TABLE accounts ADD COLUMN li_profile_photo TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
