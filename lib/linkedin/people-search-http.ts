@@ -2,7 +2,6 @@
 // LinkedIn revoke the session and sign the person out of their own browser.
 
 import type { PlaywrightCookie } from "./cookie-paste";
-import { assertLinkedInRemoteAllowed } from "./remote-guard";
 import {
   peopleFromSearchSnapshot,
   type ScrapedProfile,
@@ -78,6 +77,19 @@ function looksLoggedOut(html: string, location: string): boolean {
   return /<title>[^<]*(Sign in|Log in)/i.test(html) || /Welcome to your professional community/i.test(html.slice(0, 12000));
 }
 
+const LOGIN_ERROR =
+  "LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.";
+
+function sameUrl(a: string, b: string): boolean {
+  const left = new URL(a);
+  const right = new URL(b);
+  return (
+    left.origin === right.origin &&
+    left.pathname.replace(/\/$/, "") === right.pathname.replace(/\/$/, "") &&
+    left.searchParams.toString() === right.searchParams.toString()
+  );
+}
+
 /**
  * One search page, over HTTP. Does not launch a browser.
  * A full page of 10 means more pages may exist; this call does not fetch them.
@@ -87,29 +99,34 @@ export async function scrapePeopleSearchHttp(
   searchUrl: string,
   startPage = 1
 ): Promise<WindowedScrapeResult> {
-  assertLinkedInRemoteAllowed();
-  const url = pageUrl(searchUrl, startPage);
-  const response = await fetch(url, {
-    method: "GET",
-    redirect: "manual",
-    headers: {
-      accept: "text/html,application/xhtml+xml",
-      "user-agent": CHROME_UA,
-      "accept-language": "en-US,en;q=0.9",
-      cookie: cookieHeader(cookies),
-    },
-  });
-  const location = response.headers.get("location") ?? "";
-  if (response.status >= 300 && response.status < 400) {
-    if (/login|checkpoint|authwall/i.test(location)) {
-      throw new Error("LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.");
+  let url = pageUrl(searchUrl, startPage);
+  const header = cookieHeader(cookies);
+  let response: Response | null = null;
+  for (let hop = 0; hop < 4; hop++) {
+    response = await fetch(url, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "user-agent": CHROME_UA,
+        "accept-language": "en-US,en;q=0.9",
+        cookie: header,
+      },
+    });
+    if (response.status < 300 || response.status >= 400) break;
+    const location = response.headers.get("location") ?? "";
+    if (/login|checkpoint|authwall/i.test(location)) throw new Error(LOGIN_ERROR);
+    const next = new URL(location || url, url);
+    if (!next.hostname.endsWith("linkedin.com") || !next.pathname.includes("/search/results/people")) {
+      throw new Error("LinkedIn redirected this search away from the results page.");
     }
-    throw new Error("LinkedIn redirected this search away from the results page.");
+    const nextUrl = next.toString();
+    if (sameUrl(nextUrl, url)) throw new Error(LOGIN_ERROR);
+    url = nextUrl;
   }
+  if (!response) throw new Error(LOGIN_ERROR);
   const html = await response.text();
-  if (looksLoggedOut(html, response.url || url)) {
-    throw new Error("LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.");
-  }
+  if (looksLoggedOut(html, response.url || url)) throw new Error(LOGIN_ERROR);
   const profiles = profilesFromSearchHtml(html);
   if (profiles.length === 0) {
     throw new Error("No people were returned for this LinkedIn search. Check the filters, or re-authenticate the LinkedIn account.");

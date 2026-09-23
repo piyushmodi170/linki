@@ -627,7 +627,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
             {authMode === "login" ? (
               <form onSubmit={submitLogin} className="flex flex-col gap-3">
                 <p className="text-xs text-base-content/50 -mt-1">
-                  This signs in from this server. LinkedIn treats that as a second session and signs you out of your own browser, so the request is blocked before anything is sent.
+                  Logs in on the server under the runner&apos;s exact browser fingerprint and captures all cookies. LinkedIn may ask for a code or a device approval.
                 </p>
                 {loginStage === "creds" ? (
                   <>

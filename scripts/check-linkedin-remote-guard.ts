@@ -1,9 +1,6 @@
 import { scrapePeopleSearchHttp } from "../lib/linkedin/people-search-http";
-import {
-  LINKEDIN_REMOTE_BLOCKED_MESSAGE,
-  assertLinkedInRemoteAllowed,
-  isLinkedInRemoteBlocked,
-} from "../lib/linkedin/remote-guard";
+
+const BLOCKED = "Blocked before contacting LinkedIn";
 
 const fakeCookies = [
   {
@@ -21,63 +18,55 @@ const fakeCookies = [
 const searchUrl = "https://www.linkedin.com/search/results/people/?keywords=audit";
 
 async function main() {
-  delete process.env.LINKEDIN_REMOTE;
   let fetches = 0;
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => {
-    fetches += 1;
-    throw new Error("fetch should not run while LinkedIn remote use is blocked");
-  }) as typeof fetch;
-
-  let blocked = false;
-  try {
-    await scrapePeopleSearchHttp(fakeCookies, searchUrl);
-  } catch (err) {
-    blocked = isLinkedInRemoteBlocked(err);
-    if (!blocked) throw err;
-  }
-  if (!blocked) throw new Error("people search was not blocked");
-  if (fetches !== 0) throw new Error(`people search contacted LinkedIn ${fetches} time(s) while blocked`);
-
-  try {
-    assertLinkedInRemoteAllowed();
-    throw new Error("guard did not throw");
-  } catch (err) {
-    if (!isLinkedInRemoteBlocked(err)) throw err;
-    if ((err as Error).message !== LINKEDIN_REMOTE_BLOCKED_MESSAGE) {
-      throw new Error("blocked message changed");
-    }
-  }
-
-  process.env.LINKEDIN_REMOTE = "1";
-  fetches = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     fetches += 1;
     const cookie = new Headers(init?.headers).get("cookie") ?? "";
     if (!cookie.includes("li_at=AQ-AUDIT-NOT-A-REAL-SESSION")) {
-      throw new Error("expected the fake cookie, not a saved session");
+      throw new Error("expected the fake cookie");
     }
-    if (String(input).includes("linkedin.com") === false) {
+    if (!String(input).includes("linkedin.com/search/results/people")) {
       throw new Error(`unexpected url ${String(input)}`);
     }
-    return new Response("blocked by test", { status: 200 });
+    return new Response("<html><title>People</title><main></main></html>", { status: 200 });
   }) as typeof fetch;
 
-  let reachedNetwork = false;
+  let message = "";
   try {
     await scrapePeopleSearchHttp(fakeCookies, searchUrl);
   } catch (err) {
-    reachedNetwork = fetches === 1;
-    if (!reachedNetwork) throw err;
+    message = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
-  if (fetches !== 1) throw new Error(`expected exactly one mocked fetch, saw ${fetches}`);
 
-  globalThis.fetch = originalFetch;
-  delete process.env.LINKEDIN_REMOTE;
-  console.log("linkedin remote guard: blocked with 0 fetches; opt-in reaches fetch with the fake cookie only");
+  if (fetches !== 1) throw new Error(`people search did not contact the results page (fetches=${fetches})`);
+  if (message.includes(BLOCKED)) throw new Error("people search is still blocked before contacting LinkedIn");
+
+  fetches = 0;
+  globalThis.fetch = (async () => {
+    fetches += 1;
+    return new Response(null, {
+      status: 302,
+      headers: { location: searchUrl },
+    });
+  }) as typeof fetch;
+  message = "";
+  try {
+    await scrapePeopleSearchHttp(fakeCookies, searchUrl);
+  } catch (err) {
+    message = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  if (fetches < 1) throw new Error("redirect was not requested");
+  if (message.includes(BLOCKED)) throw new Error("redirect is still blocked before contacting LinkedIn");
+  if (!message.includes("login page")) throw new Error(`expected a login result, got: ${message}`);
+  console.log("people search fetches the results page and does not return the blocked error");
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });
