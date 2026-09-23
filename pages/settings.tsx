@@ -394,7 +394,8 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "Authentication failed"); return; }
-      setPendingProfile(data.profile);
+      toast.success(data.message ?? "Cookies saved. LinkedIn was not contacted.");
+      closeAuthModal();
       refresh();
     } catch {
       toast.error("Could not reach the server. Refresh the page and try again.");
@@ -668,7 +669,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <p>3. Find <strong>li_at</strong> → double-click the Value cell → copy it → paste below</p>
                   <p>4. Open the DevTools <strong>Console</strong> tab → run <code className="bg-base-300 px-1 rounded">document.cookie</code> → copy the output → paste below</p>
                   <p>A Cookie-Editor JSON export can be pasted into the li_at field instead.</p>
-                  <p>Saving checks LinkedIn with a normal request and shows the account it finds. It does not open a second browser, so you stay signed in.</p>
+                  <p>Saving stores the cookies on this server only. LinkedIn is not contacted, so you stay signed in where you copied them.</p>
                 </div>
                 )}
                 {pendingProfile ? (
@@ -711,7 +712,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                   <div className="modal-action mt-1">
                     <button type="button" className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm text-base-content/60 hover:text-base-content hover:bg-base-300/50 transition-colors" onClick={closeAuthModal}>Cancel</button>
                     <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-content hover:bg-primary/90 transition-colors disabled:opacity-50" disabled={authLoading}>
-                      {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Check account"}
+                      {authLoading ? <span className="loading loading-spinner loading-xs" /> : "Save cookies"}
                     </button>
                   </div>
                 </form>
