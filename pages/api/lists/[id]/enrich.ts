@@ -24,6 +24,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: "Account not authenticated" });
   }
 
+  try {
+    const { assertLinkedInRemoteAllowed } = await import("@/lib/linkedin/remote-guard");
+    assertLinkedInRemoteAllowed();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  }
+
   const pending = db.prepare(`
     SELECT COUNT(*) as c FROM targets t
     JOIN list_targets lt ON lt.target_id = t.id

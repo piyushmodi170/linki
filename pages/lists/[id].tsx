@@ -835,7 +835,7 @@ export default function ListDetailPage({
               <>
                 <h3 className="font-semibold text-base mb-1">Import from LinkedIn</h3>
                 <p className="text-base-content/50 text-xs mb-3">
-                  Paste a LinkedIn people search URL, or a Sales Navigator list or saved search. The selected account must be authenticated.
+                  Paste a LinkedIn people search URL, or a Sales Navigator list or saved search. Fetching it would send your saved cookies from this server, so the import is blocked before LinkedIn is contacted.
                 </p>
                 <div className="bg-base-300/40 border border-base-300/60 rounded-lg p-3 mb-4 space-y-1.5 text-xs text-base-content/50">
                   <p className="font-medium text-base-content/70">What gets fetched and when</p>
@@ -1013,7 +1013,7 @@ export default function ListDetailPage({
           <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
             <h3 className="font-semibold text-base mb-1">Sync Connection Status</h3>
             <p className="text-base-content/50 text-xs mb-4">
-              Fetches the saved LinkedIn URL and adds those people to this list. A people search works, as does a Sales Navigator list.
+              Fetches the saved LinkedIn URL and adds those people to this list. That fetch would send your saved cookies from this server, so Sync is blocked before LinkedIn is contacted.
             </p>
             <form onSubmit={runSync} className="flex flex-col gap-3">
               <div>

@@ -33,6 +33,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const peopleSearch = isLinkedInPeopleSearchUrl(list.sales_nav_url);
     const { profiles, exhausted } = peopleSearch
       ? await (async () => {
+          const { assertLinkedInRemoteAllowed } = await import("@/lib/linkedin/remote-guard");
+          assertLinkedInRemoteAllowed();
           const { decryptSecret } = await import("@/lib/crypto");
           const { normalizeStorageState } = await import("@/lib/linkedin/cookie-paste");
           const { scrapePeopleSearchHttp } = await import("@/lib/linkedin/people-search-http");

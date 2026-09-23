@@ -5,6 +5,7 @@ import { getDb } from "@/lib/db";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { normalizeStorageState } from "@/lib/linkedin/cookie-paste";
 import { describeSavedSession, type LinkedInProfileCard } from "@/lib/linkedin/identity";
+import { assertLinkedInRemoteAllowed } from "@/lib/linkedin/remote-guard";
 
 chromium.use(StealthPlugin());
 
@@ -58,6 +59,7 @@ async function getBrowser(headless = HEADLESS): Promise<Browser> {
 }
 
 async function getOrCreateContext(accountId: string): Promise<BrowserContext> {
+  assertLinkedInRemoteAllowed();
   const db = getDb();
   const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(accountId) as
     | { cookies_json: string | null; email: string }
@@ -255,6 +257,7 @@ export async function markNeedsReauth(accountId: string): Promise<void> {
  * Saves the full storage state to DB and marks account as authenticated.
  */
 export async function authenticateAccount(accountId: string): Promise<void> {
+  assertLinkedInRemoteAllowed();
   const db = getDb();
   const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(accountId) as
     | { email: string }
@@ -453,6 +456,7 @@ export async function startHeadlessLogin(
   email: string,
   password: string
 ): Promise<LoginResult> {
+  assertLinkedInRemoteAllowed();
   sweepPendingLogins();
   await clearPendingLogin(accountId);
 
@@ -494,6 +498,7 @@ export async function startHeadlessLogin(
 }
 
 export async function submitLoginChallenge(accountId: string, code: string): Promise<LoginResult> {
+  assertLinkedInRemoteAllowed();
   const p = pendingLogins.get(accountId);
   if (!p) return { status: "error", message: "No login in progress (it may have timed out — start again)." };
 
@@ -535,6 +540,7 @@ export async function submitLoginChallenge(accountId: string, code: string): Pro
  * interstitial. If still pending, returns the challenge so the user can retry.
  */
 export async function awaitLoginApproval(accountId: string): Promise<LoginResult> {
+  assertLinkedInRemoteAllowed();
   const p = pendingLogins.get(accountId);
   if (!p) return { status: "error", message: "No login in progress (it may have timed out — start again)." };
 
