@@ -191,6 +191,77 @@ export async function closeSession(accountId: string): Promise<void> {
 }
 
 /**
+ * Open LinkedIn with the saved cookies and record whether that session is
+ * actually signed in. Pasting cookies sets the badge; this checks LinkedIn.
+ */
+export async function verifyLinkedInSession(accountId: string): Promise<{ connected: boolean; message: string }> {
+  const db = getDb();
+  const account = db.prepare("SELECT cookies_json FROM accounts WHERE id = ?").get(accountId) as
+    | { cookies_json: string | null }
+    | undefined;
+  if (!account) throw new Error("Account not found");
+
+  const mark = (connected: boolean) => {
+    db.prepare("UPDATE accounts SET is_authenticated = ? WHERE id = ?").run(connected ? 1 : 0, accountId);
+  };
+
+  if (!account.cookies_json) {
+    mark(false);
+    return { connected: false, message: "No cookies saved. Authenticate the account first." };
+  }
+
+  let storageState: { cookies?: { name?: string }[] } | undefined;
+  try {
+    const parsed = JSON.parse(decryptSecret(account.cookies_json)!);
+    const normalized = normalizeStorageState(parsed);
+    storageState = normalized.state;
+  } catch {
+    mark(false);
+    return { connected: false, message: "Saved cookies could not be read. Paste them again." };
+  }
+
+  if (!storageState?.cookies?.some((cookie) => cookie.name === "li_at")) {
+    mark(false);
+    return { connected: false, message: "Saved cookies do not include li_at. Paste the li_at cookie or a Cookie-Editor export." };
+  }
+
+  const b = await getBrowser(true);
+  let ctx: BrowserContext;
+  try {
+    ctx = await b.newContext(contextOptions(storageState));
+  } catch {
+    mark(false);
+    return { connected: false, message: "Saved cookies were rejected by the browser. Paste them again." };
+  }
+
+  const page = await ctx.newPage();
+  try {
+    try {
+      await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/TOO_MANY_REDIRECTS|ERR_ABORTED|login|checkpoint|authwall/i.test(message)) {
+        mark(false);
+        await closeSession(accountId);
+        return { connected: false, message: "Not connected. LinkedIn rejected this session and sent it to login." };
+      }
+      throw err;
+    }
+
+    const finalUrl = page.url();
+    const connected = /linkedin\.com\/feed/i.test(finalUrl) && !/login|checkpoint|authwall|uas\/login/i.test(finalUrl);
+    mark(connected);
+    await closeSession(accountId);
+    return connected
+      ? { connected: true, message: "Connected. LinkedIn accepted this session." }
+      : { connected: false, message: "Not connected. LinkedIn opened the login page instead of the feed." };
+  } finally {
+    await page.close().catch(() => {});
+    await ctx.close().catch(() => {});
+  }
+}
+
+/**
  * B4: flag an account as logged out / needing re-auth. Clears is_authenticated
  * so the runner stops working a dead session (no more 30s-timeout fail-loop),
  * and drops the live context. The user re-authenticates from Settings.
