@@ -197,7 +197,86 @@ function resultFromEntity(obj: Record<string, unknown>): PeopleSearchHit | null 
   };
 }
 
-const CARD_ACTION = /^(connect|message|follow|pending|save|premium|follow)$/i;
+const CARD_ACTION = /^(connect|message|follow|pending|save|premium|follow|view profile|remove)$/i;
+
+/** LinkedIn replaced the search JSON with server-rendered cards. Names sit on /in/ anchors. */
+export function peopleFromSearchSnapshot(
+  anchors: { href: string; name: string }[],
+  lines: string[]
+): ScrapedProfile[] {
+  const normalize = (value: string) => value.replace(/[\s\u00a0\u202f]+/g, " ").trim();
+  const skip = (line: string) =>
+    !line
+    || /^status is/i.test(line)
+    || CARD_ACTION.test(line)
+    || /^[•·]/.test(line)
+    || /mutual connection|shared connection/i.test(line)
+    || /^summary:/i.test(line)
+    || /^about this profile/i.test(line);
+
+  const cleanName = (raw: string) =>
+    normalize(raw)
+      .replace(/^status is (online|offline)\.?\s*/i, "")
+      .replace(/'?s profile$/i, "")
+      .replace(/\s*[•·].*$/, "")
+      .trim();
+
+  const people: { href: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const anchor of anchors) {
+    const href = normalizeProfileUrl(anchor.href);
+    if (!href || seen.has(href)) continue;
+    const name = cleanName(anchor.name);
+    if (!name || name.length > 80) continue;
+    seen.add(href);
+    people.push({ href, name });
+  }
+
+  const cleanedLines = lines.map(normalize).filter(Boolean);
+  const nameAt = new Map<string, number>();
+  for (const person of people) {
+    if (nameAt.has(person.name)) continue;
+    const index = cleanedLines.findIndex(
+      (line) =>
+        !skip(line) &&
+        (line === person.name ||
+          line.startsWith(person.name + " ") ||
+          line.startsWith(person.name + ",") ||
+          line.startsWith(person.name + "'"))
+    );
+    if (index >= 0) nameAt.set(person.name, index);
+  }
+
+  const resolved = people.filter((person) => nameAt.has(person.name));
+  const profiles: ScrapedProfile[] = [];
+  for (let i = 0; i < resolved.length; i++) {
+    const person = resolved[i];
+    const start = nameAt.get(person.name)!;
+    let stop = cleanedLines.length;
+    for (let j = i + 1; j < resolved.length; j++) {
+      const next = nameAt.get(resolved[j].name);
+      if (next != null && next > start) {
+        stop = next;
+        break;
+      }
+    }
+    const slice = cleanedLines.slice(start, stop);
+    const degreeLine = slice.find((line) => /[123](?:st|nd|rd)/i.test(line)) ?? null;
+    const content = slice.filter((line) => line !== person.name && line !== degreeLine && !skip(line));
+    const profile = profileFromSearchCard(person.href, [person.name, content[0] ?? "", content[1] ?? ""].filter(Boolean));
+    if (!profile) continue;
+    if (degreeLine) profile.degree = parseDegree(degreeLine);
+    profiles.push(profile);
+  }
+  return profiles;
+}
+
+function isSessionWall(url: string, title: string, text: string): boolean {
+  if (/login|checkpoint|authwall|uas\/login|\/signup|\/join/i.test(url)) return true;
+  if (/sign in|log in|login/i.test(title)) return true;
+  if (/welcome back/i.test(text) && /password/i.test(text)) return true;
+  return false;
+}
 
 /** Turn one visible search-result card into a lead. */
 export function profileFromSearchCard(href: string, lines: string[]): ScrapedProfile | null {
@@ -630,35 +709,43 @@ export async function scrapePeopleSearch(
   let knownTotal = 0;
 
   const readPeopleFromDom = async (): Promise<ScrapedProfile[]> => {
-    const cards = await page.evaluate(() => {
-      const found: { href: string; lines: string[] }[] = [];
+    const snapshot = await page.evaluate(() => {
+      const root = document.querySelector("main") || document.body;
+      const anchors: { href: string; name: string }[] = [];
       const seen = new Set<string>();
-      for (const anchor of Array.from(document.querySelectorAll("a[href*='/in/']"))) {
-        if (anchor.closest("header, nav, footer")) continue;
-        const href = (anchor as HTMLAnchorElement).href;
-        let slug = "";
-        try {
-          const match = new URL(href).pathname.match(/^\/in\/([^/]+)\/?$/);
-          if (!match) continue;
-          slug = decodeURIComponent(match[1]);
-        } catch {
-          continue;
+      const visit = (node: ParentNode) => {
+        if (!node || !("querySelectorAll" in node)) return;
+        for (const anchor of Array.from(node.querySelectorAll("a[href*='/in/']"))) {
+          if (anchor.closest("header, nav, footer")) continue;
+          const href = (anchor as HTMLAnchorElement).href || anchor.getAttribute("href") || "";
+          if (!href || seen.has(href)) continue;
+          seen.add(href);
+          const aria = anchor.querySelector('span[aria-hidden="true"]');
+          const name = (aria?.textContent || anchor.textContent || "").trim();
+          anchors.push({ href, name });
         }
-        if (seen.has(slug)) continue;
-        seen.add(slug);
-        const card = anchor.closest("li") || anchor.closest("[data-view-name]") || anchor.parentElement?.parentElement;
-        const lines = (card?.textContent || "")
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0 && line.length < 180)
-          .slice(0, 8);
-        found.push({ href: `https://www.linkedin.com/in/${slug}/`, lines });
-      }
-      return found;
+        for (const el of Array.from(node.querySelectorAll("*"))) {
+          const shadow = (el as HTMLElement).shadowRoot;
+          if (shadow) visit(shadow);
+        }
+      };
+      visit(root);
+      const lines = (root.innerText || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && line.length < 180);
+      return { anchors, lines };
     });
-    return cards
-      .map((card) => profileFromSearchCard(card.href, card.lines))
-      .filter((profile): profile is ScrapedProfile => profile !== null);
+    return peopleFromSearchSnapshot(snapshot.anchors, snapshot.lines);
+  };
+
+  const sessionWall = async (): Promise<boolean> => {
+    const title = await page.title().catch(() => "");
+    const hint = await page.evaluate(() => ({
+      password: !!document.querySelector('input[type="password"], input[name="session_password"]'),
+      text: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 600),
+    })).catch(() => ({ password: false, text: "" }));
+    return hint.password || isSessionWall(page.url(), title, hint.text);
   };
 
   const waitForIntercept = async (url: string, waitMs: number): Promise<{ profiles: ScrapedProfile[]; total: number; loggedOut: boolean }> => {
@@ -683,11 +770,14 @@ export async function scrapePeopleSearch(
       }
       throw err;
     }
-    if (/login|checkpoint|authwall|uas\/login/i.test(page.url())) {
+    if (await sessionWall()) {
       return { profiles: [], total: 0, loggedOut: true };
     }
-    await page.waitForSelector("a[href*='/in/']", { timeout: waitMs }).catch(() => {});
+    await page.waitForSelector("main a[href*='/in/'], [data-chameleon-result-urn]", { timeout: waitMs }).catch(() => {});
     await page.waitForTimeout(1500);
+    if (await sessionWall()) {
+      return { profiles: [], total: 0, loggedOut: true };
+    }
     const domProfiles = await readPeopleFromDom();
     const profiles = best?.profiles.length ? best.profiles : domProfiles;
     return { profiles, total: best?.total ?? 0, loggedOut: false };
@@ -710,9 +800,15 @@ export async function scrapePeopleSearch(
   const first = await waitForIntercept(peopleSearchPageUrl(searchUrl, startPage), 15000);
   if (first.loggedOut || first.profiles.length === 0) {
     const finalUrl = page.url();
+    const title = await page.title().catch(() => "");
+    const snippet = await page.evaluate(() => (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 500)).catch(() => "");
+    console.log(`[scraper:people] empty title=${JSON.stringify(title)} url=${finalUrl.slice(0, 160)}`);
     await page.close();
-    if (first.loggedOut || /login|checkpoint|authwall|uas\/login/i.test(finalUrl)) {
+    if (first.loggedOut || isSessionWall(finalUrl, title, snippet)) {
       throw new Error("LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.");
+    }
+    if (/commercial use limit|monthly limit/i.test(snippet)) {
+      throw new Error("LinkedIn blocked this people search with the commercial use limit. It resets at the start of next month.");
     }
     throw new Error("No people were returned for this LinkedIn search. Check the filters, or re-authenticate the LinkedIn account.");
   }
