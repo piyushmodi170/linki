@@ -227,8 +227,8 @@ async function runBatch(importId: string): Promise<void> {
         importId
       );
     }
-    // A "no data intercepted / re-authentication" failure means the session died.
-    if (/re-authentication|No data intercepted/i.test(message) && job.account_id) {
+    // Login wall, or the older "no data intercepted" failure, means the session died.
+    if (/re-authentication|login page|No data intercepted/i.test(message) && job.account_id) {
       try {
         const { markNeedsReauth } = await import("@/lib/linkedin/session");
         await markNeedsReauth(job.account_id);
@@ -238,7 +238,7 @@ async function runBatch(importId: string): Promise<void> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: number; skipped: number } {
+export function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: number; skipped: number } {
   const insertTarget = db.prepare(
     `INSERT INTO targets (
        id, linkedin_url, sales_nav_url, first_name, last_name, full_name,
@@ -270,7 +270,8 @@ function insertProfiles(db: DB, listId: string, profiles: any[]): { imported: nu
   let skipped = 0;
   db.transaction(() => {
     for (const p of profiles) {
-      const url = p.linkedinUrl ?? p.salesNavUrl;
+      const url = p.linkedinUrl || p.salesNavUrl;
+      if (!url) { skipped++; continue; }
       insertTarget.run(
         randomUUID(), url, p.salesNavUrl,
         p.firstName, p.lastName, p.fullName,

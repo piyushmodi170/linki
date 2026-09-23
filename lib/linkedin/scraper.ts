@@ -197,6 +197,44 @@ function resultFromEntity(obj: Record<string, unknown>): PeopleSearchHit | null 
   };
 }
 
+const CARD_ACTION = /^(connect|message|follow|pending|save|premium|follow)$/i;
+
+/** Turn one visible search-result card into a lead. */
+export function profileFromSearchCard(href: string, lines: string[]): ScrapedProfile | null {
+  const linkedinUrl = normalizeProfileUrl(href);
+  if (!linkedinUrl) return null;
+
+  const cleaned = lines.map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const degreeLine = cleaned.find((line) => /[123](?:st|nd|rd)/i.test(line)) ?? null;
+  const content = cleaned.filter(
+    (line) => line !== degreeLine && !CARD_ACTION.test(line) && !/mutual connection/i.test(line)
+  );
+  const fullName = content[0] ?? null;
+  if (!fullName) return null;
+  const { title, company } = splitHeadline(content[1] ?? null);
+  const { firstName, lastName } = splitName(fullName);
+
+  return {
+    salesNavUrn: linkedinUrl,
+    salesNavUrl: "",
+    linkedinUrl,
+    fullName,
+    firstName,
+    lastName,
+    title,
+    company,
+    location: content[2] ?? null,
+    degree: parseDegree(degreeLine),
+    objectUrn: null,
+    summary: null,
+    openLink: false,
+    companyIndustry: null,
+    companyLocation: null,
+    tenureMonths: null,
+    spotlightBadges: null,
+  };
+}
+
 /** Pull people cards and the reported total out of a voyager search response. */
 export function parsePeopleSearchPayload(payload: unknown): { profiles: ScrapedProfile[]; total: number } {
   const profiles: ScrapedProfile[] = [];
@@ -591,25 +629,71 @@ export async function scrapePeopleSearch(
   const page = await ctx.newPage();
   let knownTotal = 0;
 
-  const waitForIntercept = async (url: string, waitMs: number): Promise<{ profiles: ScrapedProfile[]; total: number } | null> => {
+  const readPeopleFromDom = async (): Promise<ScrapedProfile[]> => {
+    const cards = await page.evaluate(() => {
+      const found: { href: string; lines: string[] }[] = [];
+      const seen = new Set<string>();
+      for (const anchor of Array.from(document.querySelectorAll("a[href*='/in/']"))) {
+        if (anchor.closest("header, nav, footer")) continue;
+        const href = (anchor as HTMLAnchorElement).href;
+        let slug = "";
+        try {
+          const match = new URL(href).pathname.match(/^\/in\/([^/]+)\/?$/);
+          if (!match) continue;
+          slug = decodeURIComponent(match[1]);
+        } catch {
+          continue;
+        }
+        if (seen.has(slug)) continue;
+        seen.add(slug);
+        const card = anchor.closest("li") || anchor.closest("[data-view-name]") || anchor.parentElement?.parentElement;
+        const lines = (card?.textContent || "")
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && line.length < 180)
+          .slice(0, 8);
+        found.push({ href: `https://www.linkedin.com/in/${slug}/`, lines });
+      }
+      return found;
+    });
+    return cards
+      .map((card) => profileFromSearchCard(card.href, card.lines))
+      .filter((profile): profile is ScrapedProfile => profile !== null);
+  };
+
+  const waitForIntercept = async (url: string, waitMs: number): Promise<{ profiles: ScrapedProfile[]; total: number; loggedOut: boolean }> => {
     let best: { profiles: ScrapedProfile[]; total: number } | null = null;
     page.removeAllListeners("response");
     page.on("response", async (response) => {
       const responseUrl = response.url();
       if (response.status() !== 200) return;
-      if (!/voyagerSearchDashClusters|search\/dash\/clusters|voyager\/api\/graphql/.test(responseUrl)) return;
+      if (!/voyagerSearchDashClusters|search\/dash\/clusters|voyager\/api\/graphql|voyager\/api\/search/.test(responseUrl)) return;
       try {
         const parsed = parsePeopleSearchPayload(await response.json());
         if (parsed.profiles.length === 0 && parsed.total === 0) return;
         if (!best || parsed.profiles.length > best.profiles.length) best = parsed;
       } catch { /* non-json or unrelated graphql */ }
     });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(waitMs);
-    return best;
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/TOO_MANY_REDIRECTS|ERR_ABORTED|login|checkpoint|authwall/i.test(message) || /login|checkpoint|authwall|uas\/login/i.test(page.url())) {
+        return { profiles: [], total: 0, loggedOut: true };
+      }
+      throw err;
+    }
+    if (/login|checkpoint|authwall|uas\/login/i.test(page.url())) {
+      return { profiles: [], total: 0, loggedOut: true };
+    }
+    await page.waitForSelector("a[href*='/in/']", { timeout: waitMs }).catch(() => {});
+    await page.waitForTimeout(1500);
+    const domProfiles = await readPeopleFromDom();
+    const profiles = best?.profiles.length ? best.profiles : domProfiles;
+    return { profiles, total: best?.total ?? 0, loggedOut: false };
   };
 
-  const take = (parsed: { profiles: ScrapedProfile[]; total: number } | null) => {
+  const take = (parsed: { profiles: ScrapedProfile[]; total: number; loggedOut?: boolean } | null) => {
     if (!parsed) return 0;
     if (parsed.total > knownTotal) knownTotal = parsed.total;
     let added = 0;
@@ -624,11 +708,11 @@ export async function scrapePeopleSearch(
   };
 
   const first = await waitForIntercept(peopleSearchPageUrl(searchUrl, startPage), 15000);
-  if (!first || first.profiles.length === 0) {
+  if (first.loggedOut || first.profiles.length === 0) {
     const finalUrl = page.url();
     await page.close();
-    if (/login|checkpoint|authwall/i.test(finalUrl)) {
-      throw new Error("No data intercepted from LinkedIn search — session may need re-authentication");
+    if (first.loggedOut || /login|checkpoint|authwall|uas\/login/i.test(finalUrl)) {
+      throw new Error("LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.");
     }
     throw new Error("No people were returned for this LinkedIn search. Check the filters, or re-authenticate the LinkedIn account.");
   }

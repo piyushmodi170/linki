@@ -188,8 +188,8 @@ export default function ListDetailPage({
       .then((job) => {
         if (job.status && job.status !== 'idle' && job.status !== 'done' && job.status !== 'canceled') {
           setImportJob(job);
-          setImporting(true);
-          startImportPoll();
+          setImporting(job.status === "running" || job.status === "scheduled");
+          startImportPoll(false);
         }
       })
       .catch(() => {});
@@ -294,9 +294,10 @@ export default function ListDetailPage({
     if (importPollRef.current) { clearInterval(importPollRef.current); importPollRef.current = null; }
   }
 
-  function startImportPoll() {
+  function startImportPoll(reportExistingError = false) {
     stopImportPoll();
     let lastImported = -1;
+    let reportError = reportExistingError;
     const today = new Date().toISOString().slice(0, 10);
     importPollRef.current = setInterval(async () => {
       try {
@@ -315,9 +316,12 @@ export default function ListDetailPage({
 
         if (job.status === 'error') {
           stopImportPoll(); setImporting(false);
-          toast.error(job.error ?? "Import failed");
+          // A finished failure from an earlier attempt is already stored. Only
+          // surface it when this poll was started for a new import.
+          if (reportError) toast.error(job.error ?? "Import failed");
           return;
         }
+        reportError = true;
         // Keep the active spinner only while something runs (or is due today).
         const activeNow = (job.batches ?? []).some(
           (b: { status: string; scheduled_for: string | null }) =>
@@ -334,14 +338,21 @@ export default function ListDetailPage({
     if (!importForm.account_id) { toast.error("Select an account"); return; }
     setImporting(true);
     setImportJob(null);
-    const res = await fetch(`/api/lists/${initialList.id}/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sales_nav_url: importForm.sales_nav_url,
-        account_id: importForm.account_id,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`/api/lists/${initialList.id}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sales_nav_url: importForm.sales_nav_url,
+          account_id: importForm.account_id,
+        }),
+      });
+    } catch {
+      setImporting(false);
+      toast.error("Could not reach the server. Refresh the page and try the import again.");
+      return;
+    }
     const data = await res.json();
     if (!res.ok) {
       setImporting(false);
@@ -352,7 +363,7 @@ export default function ListDetailPage({
     // Close modal, show inline progress banner, start polling
     setShowImport(false);
     setImportSource("pick");
-    startImportPoll();
+    startImportPoll(true);
   }
 
   function closeImportModal() {
@@ -399,19 +410,24 @@ export default function ListDetailPage({
     e.preventDefault();
     if (!syncAccountId) { toast.error("Select an account"); return; }
     setSyncing(true);
-    const res = await fetch(`/api/lists/${initialList.id}/sync-status`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ account_id: syncAccountId }),
-    });
-    setSyncing(false);
-    const data = await res.json();
-    if (!res.ok) { toast.error(data.error ?? "Sync failed"); return; }
-    toast.success(`Synced ${data.updated} leads`);
-    setShowSync(false);
-    const listRes = await fetch(`/api/lists/${initialList.id}`);
-    const listData = await listRes.json();
-    setTargets(listData.targets);
+    try {
+      const res = await fetch(`/api/lists/${initialList.id}/sync-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_id: syncAccountId }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Sync failed"); return; }
+      toast.success(`Synced ${data.updated} leads`);
+      setShowSync(false);
+      const listRes = await fetch(`/api/lists/${initialList.id}`);
+      const listData = await listRes.json();
+      setTargets(listData.targets);
+    } catch {
+      toast.error("Could not reach the server. Refresh the page and try Sync again.");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function enrichWithApollo() {
@@ -997,7 +1013,7 @@ export default function ListDetailPage({
           <div className="modal-box bg-base-200 border border-base-300/50 max-w-sm">
             <h3 className="font-semibold text-base mb-1">Sync Connection Status</h3>
             <p className="text-base-content/50 text-xs mb-4">
-              Re-fetches the Sales Navigator list to check who accepted your connection requests.
+              Fetches the saved LinkedIn URL and adds those people to this list. A people search works, as does a Sales Navigator list.
             </p>
             <form onSubmit={runSync} className="flex flex-col gap-3">
               <div>

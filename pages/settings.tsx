@@ -238,6 +238,7 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
   const [loginStage, setLoginStage] = useState<"creds" | "code" | "approve">("creds");
   const [challengeMsg, setChallengeMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   function openAuthModal(account: LiAccount) {
     setAuthModal(account.id);
@@ -351,6 +352,22 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
     setAccounts((prev) => prev.filter((a) => a.id !== id));
   }
 
+  async function verifyAccount(id: string) {
+    setVerifyingId(id);
+    try {
+      const res = await fetch(`/api/accounts/${id}/verify`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Verify failed"); return; }
+      if (data.connected) toast.success(data.message);
+      else toast.error(data.message);
+      refresh();
+    } catch {
+      toast.error("Could not reach the server. Refresh the page and try again.");
+    } finally {
+      setVerifyingId(null);
+    }
+  }
+
   async function submitAuth(e: React.FormEvent) {
     e.preventDefault();
     if (!authModal) return;
@@ -406,6 +423,15 @@ function LinkedInTab({ initialAccounts }: { initialAccounts: LiAccount[] }) {
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${a.is_authenticated ? "bg-success/15 text-success" : "bg-base-300 text-base-content/40"}`}>
                   {a.is_authenticated ? <><RiCheckLine size={10} /> Auth</> : "Unauth"}
                 </span>
+                <button
+                  type="button"
+                  disabled={verifyingId === a.id}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-base-300/60 text-base-content border border-base-300 hover:bg-base-300 transition-colors disabled:opacity-50"
+                  onClick={() => verifyAccount(a.id)}
+                >
+                  {verifyingId === a.id ? <span className="loading loading-spinner loading-xs" /> : <RiShieldCheckLine size={12} />}
+                  Verify
+                </button>
                 <button
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
                   onClick={() => openAuthModal(a)}
