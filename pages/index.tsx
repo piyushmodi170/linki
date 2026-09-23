@@ -338,6 +338,7 @@ function LinkedInCard({
             <button
               onClick={handleSync}
               disabled={syncing}
+              title="Would send saved LinkedIn cookies from this server. Blocked so your browser stays signed in."
               className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-base-content/40 hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-40"
             >
               <FiRefreshCw size={10} className={syncing ? "animate-spin" : ""} />

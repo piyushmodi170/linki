@@ -11,6 +11,7 @@ import { enrichProfile } from "@/lib/linkedin/enrich";
 import { matchPerson } from "@/lib/apollo";
 import { premium } from "@/lib/premium";
 import { decryptSecret } from "@/lib/crypto";
+import { isLinkedInRemoteBlocked } from "@/lib/linkedin/remote-guard";
 
 // Minimum gap between Sales Nav profile enrichment calls per account (ms)
 const SALES_NAV_ENRICH_MIN_GAP_MS = 5 * 60 * 1000;
@@ -903,6 +904,11 @@ async function executeStep(
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isLinkedInRemoteBlocked(err)) {
+      log(db, runId, target.id, "error", msg);
+      db.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run(runId);
+      return;
+    }
     if (err instanceof WeeklyLimitError) {
       log(db, runId, target.id, "error", `Weekly connection limit reached — pausing run`);
       db.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run(runId);
