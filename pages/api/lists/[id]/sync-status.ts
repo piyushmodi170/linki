@@ -27,18 +27,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     | undefined;
   if (!account?.is_authenticated) return res.status(400).json({ error: "Account not authenticated" });
 
-  const { getSessionContext } = await import("@/lib/linkedin/session");
-  const { scrapeNavigatorUrl } = await import("@/lib/linkedin/scraper");
   const { insertProfiles, startImport } = await import("@/lib/import-jobs");
 
   try {
-    const ctx = await getSessionContext(account_id);
     const peopleSearch = isLinkedInPeopleSearchUrl(list.sales_nav_url);
-    // People search is fetched one page in this request so it can return, then
-    // the runner continues the remaining pages. Sales Nav keeps its full sync.
-    const { profiles, exhausted } = await scrapeNavigatorUrl(ctx, list.sales_nav_url, {
-      maxPages: peopleSearch ? 1 : 300,
-    });
+    const { profiles, exhausted } = peopleSearch
+      ? await (async () => {
+          const { decryptSecret } = await import("@/lib/crypto");
+          const { normalizeStorageState } = await import("@/lib/linkedin/cookie-paste");
+          const { scrapePeopleSearchHttp } = await import("@/lib/linkedin/people-search-http");
+          const parsed = JSON.parse(decryptSecret(account.cookies_json ?? "") ?? "");
+          const cookies = normalizeStorageState(parsed).state.cookies;
+          return scrapePeopleSearchHttp(cookies, list.sales_nav_url!);
+        })()
+      : await (async () => {
+          const { getSessionContext } = await import("@/lib/linkedin/session");
+          const { scrapeNavigatorUrl } = await import("@/lib/linkedin/scraper");
+          const ctx = await getSessionContext(account_id);
+          return scrapeNavigatorUrl(ctx, list.sales_nav_url!, { maxPages: 300 });
+        })();
     const { imported, skipped } = insertProfiles(db, listId, profiles);
 
     const markConnected = db.prepare(
