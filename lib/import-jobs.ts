@@ -181,8 +181,6 @@ async function runBatch(importId: string): Promise<void> {
     // LinkedIn out of the browser the cookie was copied from.
     const { profiles, lastPage, knownTotal, exhausted } = peopleSearch
       ? await (async () => {
-          const { assertLinkedInRemoteAllowed } = await import("@/lib/linkedin/remote-guard");
-          assertLinkedInRemoteAllowed();
           const row = db.prepare("SELECT cookies_json FROM accounts WHERE id = ?").get(job.account_id) as
             | { cookies_json: string | null }
             | undefined;
