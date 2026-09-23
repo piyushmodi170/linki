@@ -674,7 +674,15 @@ export async function scrapePeopleSearch(
         if (!best || parsed.profiles.length > best.profiles.length) best = parsed;
       } catch { /* non-json or unrelated graphql */ }
     });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/TOO_MANY_REDIRECTS|ERR_ABORTED|login|checkpoint|authwall/i.test(message) || /login|checkpoint|authwall|uas\/login/i.test(page.url())) {
+        return { profiles: [], total: 0, loggedOut: true };
+      }
+      throw err;
+    }
     if (/login|checkpoint|authwall|uas\/login/i.test(page.url())) {
       return { profiles: [], total: 0, loggedOut: true };
     }
@@ -704,7 +712,7 @@ export async function scrapePeopleSearch(
     const finalUrl = page.url();
     await page.close();
     if (first.loggedOut || /login|checkpoint|authwall|uas\/login/i.test(finalUrl)) {
-      throw new Error("No data intercepted from LinkedIn search — session may need re-authentication");
+      throw new Error("LinkedIn sent this account back to the login page. Authenticate it in Settings → LinkedIn, then import again.");
     }
     throw new Error("No people were returned for this LinkedIn search. Check the filters, or re-authenticate the LinkedIn account.");
   }

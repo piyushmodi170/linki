@@ -338,14 +338,21 @@ export default function ListDetailPage({
     if (!importForm.account_id) { toast.error("Select an account"); return; }
     setImporting(true);
     setImportJob(null);
-    const res = await fetch(`/api/lists/${initialList.id}/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sales_nav_url: importForm.sales_nav_url,
-        account_id: importForm.account_id,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`/api/lists/${initialList.id}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sales_nav_url: importForm.sales_nav_url,
+          account_id: importForm.account_id,
+        }),
+      });
+    } catch {
+      setImporting(false);
+      toast.error("Could not reach the server. Refresh the page and try the import again.");
+      return;
+    }
     const data = await res.json();
     if (!res.ok) {
       setImporting(false);
