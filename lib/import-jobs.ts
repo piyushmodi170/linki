@@ -1,6 +1,9 @@
 import type DatabaseType from "better-sqlite3";
 import { getDb } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { decryptSecret } from "@/lib/crypto";
+import { normalizeStorageState } from "@/lib/linkedin/cookie-paste";
+import { isLinkedInPeopleSearchUrl } from "@/lib/linkedin/scraper";
 
 type DB = DatabaseType.Database;
 
@@ -161,8 +164,7 @@ async function runBatch(importId: string): Promise<void> {
   }
 
   console.log(`[import] batch ${importId} (b${job.batch_index}) start_page=${job.start_page} maxPages=${maxPages} cap=${cap}`);
-  const { getSessionContext } = await import("@/lib/linkedin/session");
-  const { scrapeNavigatorUrl } = await import("@/lib/linkedin/scraper");
+  const peopleSearch = isLinkedInPeopleSearchUrl(job.sales_nav_url);
 
   const updateProgress = db.prepare(
     "UPDATE list_imports SET phase = ?, page = ?, total_pages = ?, count = ?, total = ? WHERE id = ?"
@@ -175,13 +177,31 @@ async function runBatch(importId: string): Promise<void> {
   };
 
   try {
-    const ctx = await getSessionContext(job.account_id);
-    const { profiles, lastPage, knownTotal, exhausted } = await scrapeNavigatorUrl(ctx, job.sales_nav_url, {
-      startPage: job.start_page,
-      maxPages,
-      onProgress: (p) => updateProgress.run(p.phase, p.page ?? 0, p.totalPages ?? 0, p.count, p.total, importId),
-      isCanceled,
-    });
+    // People search stays on HTTP. A headless browser holding li_at signs
+    // LinkedIn out of the browser the cookie was copied from.
+    const { profiles, lastPage, knownTotal, exhausted } = peopleSearch
+      ? await (async () => {
+          const row = db.prepare("SELECT cookies_json FROM accounts WHERE id = ?").get(job.account_id) as
+            | { cookies_json: string | null }
+            | undefined;
+          const parsed = JSON.parse(decryptSecret(row?.cookies_json ?? "") ?? "");
+          const cookies = normalizeStorageState(parsed).state.cookies;
+          const { scrapePeopleSearchHttp } = await import("@/lib/linkedin/people-search-http");
+          const result = await scrapePeopleSearchHttp(cookies, job.sales_nav_url, job.start_page);
+          updateProgress.run("scraping", result.lastPage, result.lastPage, result.profiles.length, result.knownTotal, importId);
+          return result;
+        })()
+      : await (async () => {
+          const { getSessionContext } = await import("@/lib/linkedin/session");
+          const { scrapeNavigatorUrl } = await import("@/lib/linkedin/scraper");
+          const ctx = await getSessionContext(job.account_id!);
+          return scrapeNavigatorUrl(ctx, job.sales_nav_url, {
+            startPage: job.start_page,
+            maxPages,
+            onProgress: (p) => updateProgress.run(p.phase, p.page ?? 0, p.totalPages ?? 0, p.count, p.total, importId),
+            isCanceled,
+          });
+        })();
 
     if (isCanceled()) {
       if (db.prepare("SELECT id FROM list_imports WHERE id = ?").get(importId)) {
